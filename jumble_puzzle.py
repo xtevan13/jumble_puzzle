@@ -60,7 +60,7 @@ df.withColumn("sortedLetters", sortLetters_udf(df["letters"])) \
 dictSchema=[StructField('colID',StringType(),True),
        StructField('colValue',IntegerType(),True)]
 finalStruct=StructType(fields=dictSchema)
-df2 = sqlContext.read.csv(path='inputs/freq_dict_mini_new.json',header=True,schema=finalStruct,ignoreLeadingWhiteSpace=True, ignoreTrailingWhiteSpace=True)
+df2 = sqlContext.read.csv(path='inputs/freq_dict.csv',header=True,schema=finalStruct,ignoreLeadingWhiteSpace=True, ignoreTrailingWhiteSpace=True)
 
 newDf = df2\
   .withColumn("sortedID",sortLetters_udf(df2["colID"]))\
