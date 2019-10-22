@@ -3,14 +3,11 @@ import sys
 import shutil
 from pyspark.sql import SQLContext
 from pyspark.conf import SparkConf
+from pyspark import SparkContext
 from pyspark.sql import Row
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 from pyspark.sql.types import *
-
-try:
-    shutil.rmtree("results")
-except OSError as e:
-    print ("%s does not exist - %s." % (e.filename, e.strerror))
 
 def sortLettersUDF(letters):
     return ''.join(sorted(letters))
@@ -41,7 +38,7 @@ def updateLettersUDF(answerLetters,colID):
     return answerLetters
 
 #Setup spark context with crossJoin enabled, since I use crossJoin to get all possible matches
-sc.stop()
+#sc.stop()
 conf = SparkConf().setAll([('spark.sql.crossJoin.enabled', 'true')])
 sc = SparkContext(conf=conf).getOrCreate("MyApps")
 sqlContext = SQLContext(sc)
@@ -60,10 +57,10 @@ df.withColumn("sortedLetters", sortLetters_udf(df["letters"])) \
 dictSchema=[StructField('colID',StringType(),True),
        StructField('colValue',IntegerType(),True)]
 finalStruct=StructType(fields=dictSchema)
-df2 = sqlContext.read.csv(path='inputs/freq_dict.csv',header=True,schema=finalStruct,ignoreLeadingWhiteSpace=True, ignoreTrailingWhiteSpace=True)
+df2 = sqlContext.read.csv(path='inputs/freq_dict_mini.csv',header=True,schema=finalStruct,ignoreLeadingWhiteSpace=True, ignoreTrailingWhiteSpace=True)
 
 newDf = df2\
-  .withColumn("sortedID",sortLetters_udf(df2["colID"]))\
+  .withColumn("sortedID",F.array_join(F.sort_array(F.split(df2["colID"],"")),"",""))\
   .withColumn("wordLen", F.length('colID'))
 newDf.registerTempTable("dictionary")
 
@@ -127,16 +124,18 @@ words = words.alias('a').join(newDf.alias('d'),F.col('d.wordLen') == F.col('a.an
 final_words = words\
   .withColumn("valid",validWord_udf(words["remainingLetters2"],words["d.colID"]))\
   .filter("valid=True")\
-  .withColumn("answerWords",myConcat(F.col("colIDb"),F.col("colIDc"),F.col("d.colID")))\
+  .withColumn("answerWords",F.trim(myConcat(F.col("colIDb"),F.col("colIDc"),F.col("d.colID"))))\
+  .withColumn("answer",F.trim(myConcat(F.col("colIDb"),F.lit(" "),F.col("colIDc"),F.lit(" "),F.col("d.colID"))))\
   .withColumn("valid2",validWord_udf(words["answerLetters"],F.col("answerWords")))\
   .filter("valid2=True")\
-  .select([F.col('a.puzzle_id'),F.col('a.answerLetters'),F.col('answerWords'),F.col('colValueb'),F.col('colValuec'),F.col('d.colValue').alias("colValued")])
+  .withColumn("freq_sum",F.when(F.col("colValueb") == 0, 9999).otherwise(F.col("colValueb"))+\
+              F.when(F.col("colValuec") == 0, 9999).otherwise(F.col("colValuec"))+\
+              F.when(F.col("d.colValue") == 0, 9999).otherwise(F.col("d.colValue")))\
+  .select([F.col('a.puzzle_id'),F.col('answer'),F.col('freq_sum')])
 
-#sum word frequencies. Lowest number is most likely
+#add row_number to get lowest frequency sum as most likely
 final_words\
-  .withColumn("freq_sum",F.when(F.col("colValueb") == 0, 99999).otherwise(F.col("colValueb"))+\
-              F.when(F.col("colValuec") == 0, 99999).otherwise(F.col("colValuec"))+\
-              F.when(F.col("colValued") == 0, 99999).otherwise(F.col("colValued")))\
-  .drop("answerLetters","colValueb","colValuec","colValued","valid")\
-  .orderBy('freq_sum', ascending=True)\
-  .write.format('json').save('results')
+  .withColumn("rn",F.row_number().over(Window.partitionBy("puzzle_id").orderBy("freq_sum")))\
+  .filter("rn=1")\
+  .drop("rn")\
+  .show()
